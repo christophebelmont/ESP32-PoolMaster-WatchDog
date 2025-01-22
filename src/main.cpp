@@ -1,0 +1,534 @@
+#include <Arduino.h>
+#include <HardwareSerial.h>
+#include <WiFi.h>
+#include <ESPAsyncWebServer.h>
+#include <ElegantOTA.h>
+#include <SPIFFS.h>
+#include <Update.h>
+#include <TimeLib.h>
+#include <TelnetStream.h>
+#include <HTTPClient.h>
+#include <ESPNexUpload.h>
+#include <Elog.h>
+#include <ElogMacros.h>
+#include <WebSerial.h>
+#include "esp32_flasher.h"
+
+#define PL_LOG 0
+#define WD_LOG 1
+
+#define PAPERTRAIL_HOST "logs6.papertrailapp.com"
+#define PAPERTRAIL_PORT 21858
+#define MAX_SRV_CLIENTS 10
+
+#define NEXT_RX 33 // Nextion RX pin
+#define NEXT_TX 32 // Nextion TX pin
+
+ESP32Flasher espflasher;
+
+// ----------------------------------------------------------------------------
+// Definition of macros
+// ----------------------------------------------------------------------------
+
+#define HTTP_PORT 80
+#define LED_BUILTIN 2
+
+const long gmtOffset_sec = 3600;
+const int daylightOffset_sec = 3600;
+
+#define TABLE_SIZE 400
+
+#define ENABLE_PIN  25
+#define BOOT_PIN    26
+
+// Enable and Boot pin numbers
+const int ENPin = 25;
+const int BOOTPin = 26;
+
+// Stores LED state
+String ENState;
+
+const char* WIFI_SSID     = "CasaParigi";
+const char* WIFI_PASS = "Elsa2011Andrea2017Clara2019";
+
+const char* upgrade_host      = "192.168.86.250:8123";
+const char* upgrade_url_nextion       = "/local/tft/Nextion.tft";
+const char* upgrade_url_esp           = "/local/tft/PoolMaster.bin";
+const char* upgrade_url_watchdog           = "/local/tft/WatchDog.bin";
+
+bool mustUpgradeNextion = false;
+bool mustUpgradePoolMaster = false;
+bool mustUpgradeWatchDog = false;
+bool mustDownloadPoolMaster = false;
+bool mustDownloadWatchDog = false;
+
+int upgradeCounter = 0;
+
+const int numChars = 399;
+
+int j;
+const char* endMarker = "\n";
+char car;
+char source_data[TABLE_SIZE];
+char destination_message[TABLE_SIZE];
+
+unsigned long ota_progress_millis = 0;
+
+// Set web server port number
+AsyncWebServer server(HTTP_PORT);
+//AsyncWebSocket websock("/ws");
+
+// ----------------------------------------------------------------------------
+// SPIFFS initialization
+// ----------------------------------------------------------------------------
+
+void initSPIFFS() {
+  if (!SPIFFS.begin()) {
+    Serial.println("Cannot mount SPIFFS volume...");
+  }
+}
+
+void listDir(const char * dir){
+  WebSerial.printf("Files in %s: ", dir); 
+  File root = SPIFFS.open(dir);
+  File file = root.openNextFile();
+
+  while(file){
+      WebSerial.printf("File %s\n",file.name());
+      file = root.openNextFile();
+  }
+  WebSerial.printf("***** End *****"); 
+}
+
+// ----------------------------------------------------------------------------
+// Connecting to the WiFi network
+// ----------------------------------------------------------------------------
+
+void initWiFi() {
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
+  Serial.printf("Trying to connect [%s] ", WiFi.macAddress().c_str());
+  while (WiFi.status() != WL_CONNECTED) {
+      Serial.print(".");
+      delay(500);
+  }
+  Serial.printf(" %s\n", WiFi.localIP().toString().c_str());
+
+  // Config NTP
+  configTime(gmtOffset_sec, daylightOffset_sec, "pool.ntp.org");
+  time_t now = time(nullptr);
+  while (now < SECS_YR_2000) {
+    delay(100);
+    now = time(nullptr);
+  }
+  setTime(now);
+}
+
+// ----------------------------------------------------------------------------
+// Upgrade WatchDog from SPIFFS
+// ----------------------------------------------------------------------------
+void UpgradeWatchDog(void)
+{
+  File file = SPIFFS.open("/firmware.bin");
+  
+  if(!file){
+      Serial.println("Failed to open file for reading");
+      return;
+  }
+      
+  Serial.println("Starting update..");
+  size_t fileSize = file.size();
+  if(!Update.begin(fileSize)){
+      Serial.println("Cannot do the update");
+      return;
+  };
+
+  Update.writeStream(file);
+  if(Update.end()){
+      
+    Serial.println("Successful update");  
+  }else {
+      
+    Serial.println("Error Occurred: " + String(Update.getError()));
+    return;
+  }
+    
+  file.close();
+  Serial.println("Reset in 4 seconds...");
+  delay(4000);
+  ESP.restart();  
+}
+
+// ----------------------------------------------------------------------------
+// DOWNLOAD Firmware to SPIFFS
+// ----------------------------------------------------------------------------
+void DownloadtoSPIFFS(const char* upgrade_url)
+{
+   logger.log(WD_LOG, WARNING, "Connection to %s",upgrade_host);
+  
+    HTTPClient http;
+    
+    // begin http client
+      if(!http.begin(String("http://") + upgrade_host + upgrade_url)){
+      logger.log(WD_LOG, WARNING, "Connection Failed");
+      WebSerial.printf("Connection failed");
+      return;
+    }
+  
+    logger.log(WD_LOG, WARNING, "Requesting URL: %s",upgrade_url);
+   
+  
+    // This will send the (get) request to the server
+    int code          = http.GET();
+    int contentLength = http.getSize();
+      
+    // Update the nextion display
+    if(code == 200){
+      logger.log(WD_LOG, WARNING, "Connected to download server");
+
+      bool result;
+
+      File file = SPIFFS.open("/firmware.bin", "w");
+      if (file) {
+        http.writeToStream(&file);
+        file.close();
+      }
+      else {
+        logger.log(WD_LOG, WARNING, "Failed to create binary file");
+      }
+    }else{
+      // else print http error
+      logger.log(WD_LOG, WARNING, "HTTP Error %s",http.errorToString(code).c_str());
+    }
+    http.end();
+    Serial.println("Closing connection\n");
+}
+
+// ----------------------------------------------------------------------------
+// NEXTION UPGRADE FUNCTION initialization
+// ----------------------------------------------------------------------------
+void UpgradeNextion(void)
+{
+   logger.log(WD_LOG, WARNING, "Connection to %s",upgrade_host);
+  
+    HTTPClient http;
+    
+    // begin http client
+      if(!http.begin(String("http://") + upgrade_host + upgrade_url_nextion)){
+      logger.log(WD_LOG, WARNING, "Connection Failed");
+      return;
+    }
+  
+    logger.log(WD_LOG, WARNING, "Requesting URL: %s",upgrade_url_nextion);
+   
+  
+    // This will send the (get) request to the server
+    int code          = http.GET();
+    int contentLength = http.getSize();
+      
+    // Update the nextion display
+    if(code == 200){
+      logger.log(WD_LOG, WARNING, "File received. Update Nextion...");
+
+      bool result;
+
+      // initialize ESPNexUpload
+      ESPNexUpload nextion(115200);
+      upgradeCounter=0;
+      // set callback: What to do / show during upload..... Optional! Called every 2048 bytes
+      nextion.setUpdateProgressCallback([](){
+        //Serial.print(".");
+        upgradeCounter++;
+      });
+      
+      // prepare upload: setup serial connection, send update command and send the expected update size
+      result = nextion.prepareUpload(contentLength);
+      
+      if(!result){
+          logger.log(WD_LOG, ERROR, "Error: %s",nextion.statusMessage.c_str());
+          //Serial.println("Error: " + nextion.statusMessage);
+      }else{
+          logger.log(WD_LOG, WARNING, "Start upload. File size is: %d bytes",contentLength);
+          //Serial.print(F("Start upload. File size is: "));
+          //Serial.print(contentLength);
+          //Serial.println(F(" bytes"));
+          
+          // Upload the received byte Stream to the nextion
+          result = nextion.upload(*http.getStreamPtr());
+          
+          if(result){
+            logger.log(WD_LOG, INFO, "Successfully updated Nextion %d chunks",upgradeCounter);
+            //Serial.println("\nSuccesfully updated Nextion!");
+          }else{
+            logger.log(WD_LOG, INFO, "Error updating Nextion: %s",nextion.statusMessage.c_str());
+            //Serial.println("\nError updating Nextion: " + nextion.statusMessage);
+          }
+
+          // end: wait(delay) for the nextion to finish the update process, send nextion reset command and end the serial connection to the nextion
+          nextion.end();
+          pinMode(NEXT_RX,INPUT);
+          pinMode(NEXT_TX,INPUT);
+      }
+      
+
+    }else{
+      // else print http error
+      Serial.println(String("HTTP error: ")+ http.errorToString(code).c_str());
+    }
+
+    http.end();
+    Serial.println("Closing connection\n");
+}
+
+// ----------------------------------------------------------------------------
+// Message Callback WebSocket
+// ----------------------------------------------------------------------------
+void recvMsg(uint8_t *data, size_t len){
+  WebSerial.println("Received Data...");
+  String d = "";
+  for(int i=0; i < len; i++){
+    d += char(data[i]);
+  }
+  WebSerial.println(d);
+  if (d == "Start PoolMaster"){
+    logger.log(WD_LOG, WARNING, "Command Start PoolMaster");
+    if(digitalRead(ENPin)==LOW)
+    {
+      pinMode(ENPin, OUTPUT);
+      digitalWrite(ENPin, HIGH);
+      pinMode(ENPin, INPUT);
+    }
+  }
+  if (d=="Stop PoolMaster"){
+    logger.log(WD_LOG, WARNING, "Command Stop PoolMaster");
+    pinMode(ENPin, OUTPUT);
+    digitalWrite(ENPin, LOW);
+  }
+  if (d =="Upgrade Nextion"){
+    logger.log(WD_LOG, WARNING, "Command Upgrade Nextion");
+    mustUpgradeNextion=true;
+  }
+  if (d=="Upgrade PoolMaster"){
+    logger.log(WD_LOG, WARNING, "Command Upgrade PoolMaster");
+    mustUpgradePoolMaster=true;
+  }
+  if (d=="Upgrade WatchDog"){
+    logger.log(WD_LOG, WARNING, "Command Upgrade WatchDog");
+    mustUpgradeWatchDog=true;
+  }
+  if (d=="Download PoolMaster"){
+    logger.log(WD_LOG, WARNING, "Command Download PoolMaster");
+    mustDownloadPoolMaster=true;
+  }
+  if (d=="Download WatchDog"){
+    logger.log(WD_LOG, WARNING, "Command Download WatchDog");
+    mustDownloadWatchDog=true;
+  }
+
+  if (d=="List Files"){
+    listDir("/");
+  }
+
+  if (d=="Delete Firmware"){
+    SPIFFS.remove("/firmware.bin");
+  }
+}
+
+// ----------------------------------------------------------------------------
+// AlegantOTA functions
+// ----------------------------------------------------------------------------
+void onOTAStart() {
+  // Log when OTA has started
+  Serial.println("OTA update started!");
+  // <Add your own code here>
+}
+
+void onOTAProgress(size_t current, size_t final) {
+  // Log every 1 second
+  if (millis() - ota_progress_millis > 1000) {
+    ota_progress_millis = millis();
+    Serial.printf("OTA Progress Current: %u bytes, Final: %u bytes\n\r", current, final);
+  }
+}
+
+void onOTAEnd(bool success) {
+  // Log when OTA has finished
+  if (success) {
+    Serial.println("OTA update finished successfully!");
+  } else {
+    Serial.println("There was an error during OTA update!");
+  }
+  // <Add your own code here>
+}
+
+void initElegantOTA() {
+  ElegantOTA.begin(&server);    // Start ElegantOTA
+  // ElegantOTA callbacks
+  ElegantOTA.onStart(onOTAStart);
+  ElegantOTA.onProgress(onOTAProgress);
+  ElegantOTA.onEnd(onOTAEnd);
+}
+
+// ----------------------------------------------------------------------------
+// SETUP
+// ----------------------------------------------------------------------------
+void setup() { 
+  Serial.begin(115200);delay(100);
+  Serial2.begin(115200);delay(100);
+
+  initSPIFFS();
+  initWiFi();
+
+  WebSerial.begin(&server);
+    /* Attach Message Callback */
+  WebSerial.onMessage(&recvMsg);
+  server.onNotFound([](AsyncWebServerRequest* request) { request->redirect("/webserial"); });
+  server.begin();
+
+  //initWebSocket();
+  //initWebServer();
+  initElegantOTA();
+
+  // Clear the buffer.
+  for(j=0; j<TABLE_SIZE;j++) source_data[j] = 0;
+  
+  // Configure Syslog Loger (ELog)
+  logger.configureSyslog(PAPERTRAIL_HOST, PAPERTRAIL_PORT, ""); // Syslog server IP, port and device name
+  //logger.registerSerial(COUNTER, DEBUG, "COUNT", Serial); // Log both to serial...
+  logger.registerSyslog(PL_LOG, DEBUG, FAC_LOCAL0, "poolmaster"); // ...and syslog. Set the facility to user
+  logger.registerSyslog(WD_LOG, DEBUG, FAC_LOCAL0, "watchdog"); // ...and syslog. Set the facility to user
+  logger.log(WD_LOG, INFO, "PoolMaster Logs Started");
+  logger.log(WD_LOG, INFO, "WatchDog Logs Started");
+  // Configure Telnet Streaming
+  TelnetStream.begin(23);
+}
+
+void loop(){
+  //websock.cleanupClients();
+
+  static int ndx = 0;
+  uint8_t logLevel = 0;
+  char *loglevel_position;
+
+  switch (TelnetStream.read()) {
+    case 'R':
+    TelnetStream.stop();
+    delay(100);
+    ESP.restart();
+      break;
+    case 'N':
+      mustUpgradeNextion=true;
+    case 'P':
+      mustUpgradePoolMaster=true;
+    break;
+  
+  }
+
+  //Check if upgrade requested
+  if (mustUpgradeNextion) {
+    mustUpgradeNextion=false;
+    logger.log(WD_LOG, WARNING, "Nextion Upgrade Requested");
+    UpgradeNextion();
+  }
+  if(mustUpgradePoolMaster) {
+    mustUpgradePoolMaster=false;
+    logger.log(WD_LOG, WARNING, "PoolMaster Upgrade Requested");
+    espflasher.espFlasherInit();//sets up Serial communication to another esp32
+
+    int connect_status = espflasher.espConnect();
+
+    if (connect_status != SUCCESS) {
+      logger.log(WD_LOG, WARNING, "Cannot connect to target");
+    }
+    logger.log(WD_LOG, WARNING, "Connected to target");
+
+    espflasher.espFlashBinFile("/firmware.bin");
+  }
+  if (mustDownloadPoolMaster) {
+    mustDownloadPoolMaster=false;
+    DownloadtoSPIFFS(upgrade_url_esp);
+    logger.log(WD_LOG, WARNING, "PoolMaster Download Requested");
+  }
+  if (mustDownloadWatchDog) {
+    mustDownloadWatchDog=false;
+    DownloadtoSPIFFS(upgrade_url_watchdog);
+    logger.log(WD_LOG, WARNING, "WatchDog Download Requested");
+  }
+  if (mustUpgradeWatchDog) {
+    mustUpgradeWatchDog=false;
+    UpgradeWatchDog();
+    logger.log(WD_LOG, WARNING, "WatchDog Upgrade Requested");
+  }
+
+
+  while (Serial2.available()) {
+    car = Serial2.read();
+    //delay(10);
+    // Split lines
+    if (strcmp(&car,endMarker) != 0) {         // New caracter in line
+        source_data[ndx] = car;
+        ndx++;
+        if (ndx >= numChars) {    // We reached line max size
+            ndx = numChars - 1;
+        }
+    }
+    else {                          // End of line
+        source_data[ndx] = '\0';    // Terminate the string
+        TelnetStream.println(source_data);
+        // Error by default
+        logLevel = 0;
+        bool must_send_to_server = false;
+
+        // Parse line to get log level
+        loglevel_position = strstr(source_data,"[DBG_ERROR  ]");
+        if (loglevel_position != NULL) {
+          logLevel = 3;
+          must_send_to_server = true;
+        }
+
+        loglevel_position = strstr(source_data,"[DBG_WARNING]");
+        if (loglevel_position != NULL) {
+          logLevel = 4;
+          must_send_to_server = true;
+        }
+
+        loglevel_position = strstr(source_data,"[DBG_INFO   ]");
+        if (loglevel_position != NULL) {
+          logLevel = 5;
+          must_send_to_server = true;
+        }
+
+        loglevel_position = strstr(source_data,"[DBG_DEBUG  ]");
+        if (loglevel_position != NULL) {
+          logLevel = 6;
+          must_send_to_server = true;
+        }
+
+        // Do not send the verbose to the server
+        loglevel_position = strstr(source_data,"[DBG_VERBOSE]");
+        if (loglevel_position != NULL)
+          logLevel = 7;
+
+        if (logLevel == 0) {
+          logLevel = 2;
+          memcpy(destination_message, source_data,sizeof(source_data));
+          must_send_to_server = true;
+        } else {
+          memcpy(destination_message, source_data+14,sizeof(source_data));
+        }
+
+        // Send the logs if message contains something
+        if ((strlen(destination_message) >= 1) && must_send_to_server) {
+          WebSerial.printf("%s",destination_message);
+          logger.log(PL_LOG, logLevel, "%s", destination_message);
+        }
+
+        // Reset number of char read from serial
+        ndx = 0;
+    }
+  }  
+  // Check for updates
+  ElegantOTA.loop();
+  // Update WebSerial
+  WebSerial.loop();
+} 
