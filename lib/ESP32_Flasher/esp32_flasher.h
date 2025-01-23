@@ -2,8 +2,12 @@
 #ifndef ESP32_FLASHER_H
 #define ESP32_FLASHER_H
 
+#include <functional>
 #include "Arduino.h"
 #include <SPIFFS.h>
+
+// callback template definition
+typedef std::function<void(void)> THandlerFunction;
 
 // Timeouts and retry parameters
 #define DEFAULT_TIMEOUT 1000              // Standard timeout for most operations (ms)
@@ -24,7 +28,8 @@ static const uint8_t DB_REPLACEMENT[2] = {0xDB, 0xDD};  // Escape sequence for 0
 
 // Flash parameters
 #define ESP_FLASH_MAX_SIZE 0x2470000      // Maximum flash size (~37MB)
-#define ESP_FLASH_OFFSET   0x10000        // Default flash offset (64KB)
+#define ESP_FLASH_OFFSET   0x10000        // Default flash offset (64KB) app0
+#define ESP_FLASH_SIZE     0x140000       // Default flash size         app0
 
 // Communication direction flags
 #define READ_DIRECTION  1
@@ -75,6 +80,8 @@ class ESP32Flasher {
     uint32_t s_flash_write_size = 0;    // Current flash write block size
     uint32_t s_sequence_number = 0;     // Packet sequence counter
     int32_t s_time_end = 0;            // Operation timeout timestamp
+    uint32_t _undownloadByte; 	    /* undownload byte of tft file */
+    THandlerFunction _updateProgressCallback;
 
     // Internal command handlers
     int verifyResponse(uint8_t command);
@@ -89,11 +96,16 @@ class ESP32Flasher {
     int espFlashWrite(void *payload, uint32_t size);
     int epsFlashFinish(bool reboot);
     int flashBinary(File& file, uint32_t size, uint32_t address);
+    int flashBinaryStream(Stream &myFile, uint32_t size, uint32_t address);
 
   public:
+	  void setUpdateProgressCallback(THandlerFunction value);
     void espFlasherInit(void);           // Initialize flasher
     bool espConnect(void);               // Establish connection
     void espFlashBinFile(const char* bin_file_name);  // Flash binary file
+    void espFlashBinStream(Stream &myFile,uint32_t size);  // Flash binary file
+
+
 };
 
 #endif

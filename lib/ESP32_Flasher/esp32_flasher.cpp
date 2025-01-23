@@ -26,6 +26,10 @@ static uint8_t compute_checksum(const uint8_t *data, uint32_t size) {
   return checksum;
 }
 
+void ESP32Flasher::setUpdateProgressCallback(THandlerFunction value){
+	_updateProgressCallback = value;
+}
+
 /**
    Verify and process response from ESP32
    @param command: Expected command to verify against
@@ -650,6 +654,27 @@ void ESP32Flasher::espFlasherInit(void) {
 }
 
 /**
+   Flash a binary stream to the ESP32
+   @param myFile: Name of data stream
+*/
+void ESP32Flasher::espFlashBinStream(Stream &myFile, uint32_t size)  // Flash binary file
+{
+  Serial.println("\n[INFO] ========== Starting Binary Stream Flash Process ==========");
+  Serial.println("[WARN] Do not interrupt the flashing process!");
+  Serial.printf("[INFO] Attempting to flash stream");
+
+  flashBinaryStream(myFile, size, ESP_FLASH_OFFSET);
+
+  // Reset ESP32
+  Serial.println("[INFO] Resetting ESP32...");
+  digitalWrite(EN_PIN, LOW);
+  delay(100);
+  digitalWrite(EN_PIN, HIGH);
+
+  Serial.println("================================================\n");
+}
+
+/**
    Flash a binary file to the ESP32
    @param bin_file_name: Name of binary file in SPIFFS
 */
@@ -683,6 +708,71 @@ void ESP32Flasher::espFlashBinFile(const char* bin_file_name) {
   digitalWrite(EN_PIN, HIGH);
 
   Serial.println("================================================\n");
+}
+
+/**
+   Flash a binary Stream to ESP32
+   @param file: Reference to the binary file to flash
+   @param address: Flash address to write to
+   Returns: SUCCESS or error code
+*/
+int ESP32Flasher::flashBinaryStream(Stream &myFile, uint32_t size, uint32_t address)
+{
+  uint8_t payload[1024];  // Buffer for flash data chunks
+
+  Serial.println("\n[INFO] ========== Starting Binary Flash Process ==========");
+  Serial.printf("[INFO] File size: %d bytes\n", size);
+  Serial.printf("[INFO] Flash address: 0x%X\n", address);
+
+  // Step 1: Initialize flash process
+  Serial.println("[INFO] Erasing flash (this may take a while)...");
+  int flash_start_status = espFlashStart(address, size, sizeof(payload));
+  if (flash_start_status != SUCCESS) {
+    Serial.printf("[ERROR] Flash erase failed with error: %d\n", flash_start_status);
+    return flash_start_status;
+  }
+
+  // Step 2: Program flash
+  Serial.println("[INFO] Starting programming sequence");
+  size_t binary_size = size;
+  size_t written = 0;
+  int previousProgress = -1;
+
+  // Write data in chunks
+  while (size > 0) {
+    // Calculate chunk size
+    size_t to_read = MIN(size, sizeof(payload));
+
+    // Read chunk from file
+    myFile.readBytes(payload, to_read);
+
+    // Write chunk to flash
+    flash_start_status = espFlashWrite(payload, to_read);
+    if (flash_start_status != SUCCESS) {
+      Serial.printf("[ERROR] Flash write failed at offset 0x%X with error: %d\n",
+                    written, flash_start_status);
+      return flash_start_status;
+    }
+
+    // Update progress
+    size -= to_read;
+    written += to_read;
+
+    // Display progress
+    int progress = (int)(((float)written / binary_size) * 100);
+    if (previousProgress != progress) {
+      previousProgress = progress;
+      Serial.printf("[INFO] Programming progress: %d%% (%d/%d)\n", progress,written,binary_size);
+      // Callback function called at every new percent done
+      if(_updateProgressCallback){
+        _updateProgressCallback();
+      }
+    }
+  }
+
+  Serial.println("[INFO] Programming complete!");
+  Serial.println("================================================\n");
+  return SUCCESS;
 }
 
 /**

@@ -17,14 +17,13 @@
 #define PL_LOG 0
 #define WD_LOG 1
 
+
 #define PAPERTRAIL_HOST "logs6.papertrailapp.com"
 #define PAPERTRAIL_PORT 21858
 #define MAX_SRV_CLIENTS 10
 
 #define NEXT_RX 33 // Nextion RX pin
 #define NEXT_TX 32 // Nextion TX pin
-
-ESP32Flasher espflasher;
 
 // ----------------------------------------------------------------------------
 // Definition of macros
@@ -52,8 +51,8 @@ const char* WIFI_SSID     = "CasaParigi";
 const char* WIFI_PASS = "Elsa2011Andrea2017Clara2019";
 
 const char* upgrade_host      = "192.168.86.250:8123";
-const char* upgrade_url_nextion       = "/local/tft/Nextion.tft";
-const char* upgrade_url_esp           = "/local/tft/PoolMaster.bin";
+const char* upgrade_url_nextion       = "/local/poolmaster/Nextion.tft";
+const char* upgrade_url_esp           = "/local/poolmaster/PoolMaster.bin";
 const char* upgrade_url_watchdog           = "/local/tft/WatchDog.bin";
 
 bool mustUpgradeNextion = false;
@@ -209,18 +208,17 @@ void DownloadtoSPIFFS(const char* upgrade_url)
 // ----------------------------------------------------------------------------
 void UpgradeNextion(void)
 {
-   logger.log(WD_LOG, WARNING, "Connection to %s",upgrade_host);
+   WebSerial.printf("Connection to %s",upgrade_host);
   
     HTTPClient http;
     
     // begin http client
       if(!http.begin(String("http://") + upgrade_host + upgrade_url_nextion)){
-      logger.log(WD_LOG, WARNING, "Connection Failed");
+      WebSerial.printf("Connection failed");
       return;
     }
   
-    logger.log(WD_LOG, WARNING, "Requesting URL: %s",upgrade_url_nextion);
-   
+    WebSerial.printf("Requesting URL: %s",upgrade_url_nextion);
   
     // This will send the (get) request to the server
     int code          = http.GET();
@@ -228,40 +226,32 @@ void UpgradeNextion(void)
       
     // Update the nextion display
     if(code == 200){
-      logger.log(WD_LOG, WARNING, "File received. Update Nextion...");
-
+      WebSerial.printf("File received. Update Nextion...");
       bool result;
 
       // initialize ESPNexUpload
       ESPNexUpload nextion(115200);
-      upgradeCounter=0;
       // set callback: What to do / show during upload..... Optional! Called every 2048 bytes
+      upgradeCounter=0;
       nextion.setUpdateProgressCallback([](){
-        //Serial.print(".");
         upgradeCounter++;
       });
-      
       // prepare upload: setup serial connection, send update command and send the expected update size
       result = nextion.prepareUpload(contentLength);
       
       if(!result){
-          logger.log(WD_LOG, ERROR, "Error: %s",nextion.statusMessage.c_str());
+          WebSerial.printf("Error: %s",nextion.statusMessage.c_str());
           //Serial.println("Error: " + nextion.statusMessage);
       }else{
-          logger.log(WD_LOG, WARNING, "Start upload. File size is: %d bytes",contentLength);
-          //Serial.print(F("Start upload. File size is: "));
-          //Serial.print(contentLength);
-          //Serial.println(F(" bytes"));
+          WebSerial.printf("Start upload. File size is: %d bytes",contentLength);
           
           // Upload the received byte Stream to the nextion
           result = nextion.upload(*http.getStreamPtr());
           
           if(result){
-            logger.log(WD_LOG, INFO, "Successfully updated Nextion %d chunks",upgradeCounter);
-            //Serial.println("\nSuccesfully updated Nextion!");
+            WebSerial.printf("Successfully updated Nextion");
           }else{
-            logger.log(WD_LOG, INFO, "Error updating Nextion: %s",nextion.statusMessage.c_str());
-            //Serial.println("\nError updating Nextion: " + nextion.statusMessage);
+            WebSerial.printf("Error updating Nextion: %s",nextion.statusMessage.c_str());
           }
 
           // end: wait(delay) for the nextion to finish the update process, send nextion reset command and end the serial connection to the nextion
@@ -273,25 +263,80 @@ void UpgradeNextion(void)
 
     }else{
       // else print http error
-      Serial.println(String("HTTP error: ")+ http.errorToString(code).c_str());
+      WebSerial.printf("HTTP error: %d",http.errorToString(code).c_str());
     }
 
     http.end();
-    Serial.println("Closing connection\n");
+    WebSerial.printf("Closing connection");
+}
+
+// ----------------------------------------------------------------------------
+// POOLMASTER UPGRADE FUNCTION initialization
+// ----------------------------------------------------------------------------
+void UpgradePoolMaster(void)
+{
+   WebSerial.printf("Connection to %s",upgrade_host);
+  
+    HTTPClient http;
+    
+    // begin http client
+      if(!http.begin(String("http://") + upgrade_host + upgrade_url_esp)){
+      WebSerial.printf("Connection failed");
+      return;
+    }
+  
+    WebSerial.printf("Requesting URL: %s",upgrade_url_esp);
+   
+    // This will send the (get) request to the server
+    int code          = http.GET();
+    int contentLength = http.getSize();
+    
+    // Update the nextion display
+    if(code == 200){
+      WebSerial.printf("File received. Update PoolMaster...");
+      bool result;
+
+      // Initialize ESP32Flasher
+      ESP32Flasher espflasher;
+      // set callback: What to do / show during upload..... Optional! Called every 2048 bytes
+      upgradeCounter=0;
+      espflasher.setUpdateProgressCallback([](){
+        upgradeCounter++;
+        WebSerial.printf("PoolMaster Programming progress: %d%%",upgradeCounter);   
+      });
+      espflasher.espFlasherInit();//sets up Serial communication to another esp32
+
+      int connect_status = espflasher.espConnect();
+
+      if (connect_status != SUCCESS) {
+        WebSerial.printf("Cannot connect to target");
+      }else{
+        WebSerial.printf("Connected to target");
+
+        espflasher.espFlashBinStream(*http.getStreamPtr(),contentLength);
+      }
+
+    }else{
+      // else print http error
+      WebSerial.printf("HTTP error: %d",http.errorToString(code).c_str());
+    }
+
+    http.end();
+    WebSerial.printf("Closing connection");
 }
 
 // ----------------------------------------------------------------------------
 // Message Callback WebSocket
 // ----------------------------------------------------------------------------
 void recvMsg(uint8_t *data, size_t len){
-  WebSerial.println("Received Data...");
+  //WebSerial.println("Received Data...");
   String d = "";
   for(int i=0; i < len; i++){
     d += char(data[i]);
   }
   WebSerial.println(d);
   if (d == "Start PoolMaster"){
-    logger.log(WD_LOG, WARNING, "Command Start PoolMaster");
+    WebSerial.printf("Starting PoolMaster ...");
     if(digitalRead(ENPin)==LOW)
     {
       pinMode(ENPin, OUTPUT);
@@ -300,28 +345,32 @@ void recvMsg(uint8_t *data, size_t len){
     }
   }
   if (d=="Stop PoolMaster"){
-    logger.log(WD_LOG, WARNING, "Command Stop PoolMaster");
+    WebSerial.printf("Stopping PoolMaster ...");
     pinMode(ENPin, OUTPUT);
     digitalWrite(ENPin, LOW);
   }
+  if (d=="Reboot PoolMaster"){
+    WebSerial.printf("Stopping PoolMaster ...");
+    pinMode(ENPin, OUTPUT);
+    digitalWrite(ENPin, LOW);
+    delay(500);
+    WebSerial.printf("Starting PoolMaster ...");
+    digitalWrite(ENPin, HIGH);
+    pinMode(ENPin, INPUT);
+  }
   if (d =="Upgrade Nextion"){
-    logger.log(WD_LOG, WARNING, "Command Upgrade Nextion");
     mustUpgradeNextion=true;
   }
   if (d=="Upgrade PoolMaster"){
-    logger.log(WD_LOG, WARNING, "Command Upgrade PoolMaster");
     mustUpgradePoolMaster=true;
   }
   if (d=="Upgrade WatchDog"){
-    logger.log(WD_LOG, WARNING, "Command Upgrade WatchDog");
     mustUpgradeWatchDog=true;
   }
   if (d=="Download PoolMaster"){
-    logger.log(WD_LOG, WARNING, "Command Download PoolMaster");
     mustDownloadPoolMaster=true;
   }
   if (d=="Download WatchDog"){
-    logger.log(WD_LOG, WARNING, "Command Download WatchDog");
     mustDownloadWatchDog=true;
   }
 
@@ -427,37 +476,37 @@ void loop(){
   //Check if upgrade requested
   if (mustUpgradeNextion) {
     mustUpgradeNextion=false;
-    logger.log(WD_LOG, WARNING, "Nextion Upgrade Requested");
+    WebSerial.printf("Nextion Upgrade Requested\n");
+    WebSerial.printf("Stopping PoolMaster...");
+    pinMode(ENPin, OUTPUT);
+    digitalWrite(ENPin, LOW);
+    WebSerial.printf("Upgrading Nextion ...");
     UpgradeNextion();
+    WebSerial.printf("Starting PoolMaster ...");
+    digitalWrite(ENPin, HIGH);
+    pinMode(ENPin, INPUT);
   }
   if(mustUpgradePoolMaster) {
     mustUpgradePoolMaster=false;
-    logger.log(WD_LOG, WARNING, "PoolMaster Upgrade Requested");
-    espflasher.espFlasherInit();//sets up Serial communication to another esp32
-
-    int connect_status = espflasher.espConnect();
-
-    if (connect_status != SUCCESS) {
-      logger.log(WD_LOG, WARNING, "Cannot connect to target");
-    }
-    logger.log(WD_LOG, WARNING, "Connected to target");
-
-    espflasher.espFlashBinFile("/firmware.bin");
+    WebSerial.printf("PoolMaster Upgrade Requested");
+    UpgradePoolMaster();
   }
   if (mustDownloadPoolMaster) {
     mustDownloadPoolMaster=false;
-    DownloadtoSPIFFS(upgrade_url_esp);
     logger.log(WD_LOG, WARNING, "PoolMaster Download Requested");
+    DownloadtoSPIFFS(upgrade_url_esp);
+    logger.log(WD_LOG, WARNING, "PoolMaster Download Ended");
   }
   if (mustDownloadWatchDog) {
     mustDownloadWatchDog=false;
-    DownloadtoSPIFFS(upgrade_url_watchdog);
     logger.log(WD_LOG, WARNING, "WatchDog Download Requested");
+    DownloadtoSPIFFS(upgrade_url_watchdog);
+    logger.log(WD_LOG, WARNING, "WatchDog Download Ended");
   }
   if (mustUpgradeWatchDog) {
     mustUpgradeWatchDog=false;
-    UpgradeWatchDog();
     logger.log(WD_LOG, WARNING, "WatchDog Upgrade Requested");
+    UpgradeWatchDog();
   }
 
 
