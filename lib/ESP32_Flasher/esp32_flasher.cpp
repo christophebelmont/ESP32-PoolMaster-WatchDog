@@ -678,7 +678,7 @@ void ESP32Flasher::espFlashBinStream(Stream &myFile, uint32_t size)  // Flash bi
    Flash a binary file to the ESP32
    @param bin_file_name: Name of binary file in SPIFFS
 */
-void ESP32Flasher::espFlashBinFile(const char* bin_file_name) {
+/*void ESP32Flasher::espFlashBinFile(const char* bin_file_name) {
   Serial.println("\n[INFO] ========== Starting Binary File Flash Process ==========");
   Serial.println("[WARN] Do not interrupt the flashing process!");
   Serial.printf("[INFO] Attempting to flash file: %s\n", bin_file_name);
@@ -708,7 +708,7 @@ void ESP32Flasher::espFlashBinFile(const char* bin_file_name) {
   digitalWrite(EN_PIN, HIGH);
 
   Serial.println("================================================\n");
-}
+}*/
 
 /**
    Flash a binary Stream to ESP32
@@ -782,6 +782,7 @@ int ESP32Flasher::flashBinaryStream(Stream &myFile, uint32_t size, uint32_t addr
    @param address: Flash address to write to
    Returns: SUCCESS or error code
 */
+/*
 int ESP32Flasher::flashBinary(File& file, uint32_t size, uint32_t address) {
   uint8_t payload[1024];  // Buffer for flash data chunks
 
@@ -834,7 +835,7 @@ int ESP32Flasher::flashBinary(File& file, uint32_t size, uint32_t address) {
   Serial.println("[INFO] Programming complete!");
   Serial.println("================================================\n");
   return SUCCESS;
-}
+}*/
 
 int ESP32Flasher::epsFlashFinish(bool reboot)
 {

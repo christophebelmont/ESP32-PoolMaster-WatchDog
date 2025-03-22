@@ -4,7 +4,6 @@
 
 #include <functional>
 #include "Arduino.h"
-#include <SPIFFS.h>
 
 // callback template definition
 typedef std::function<void(void)> THandlerFunction;
@@ -95,14 +94,14 @@ class ESP32Flasher {
     int espFlashStart(uint32_t flash_address, uint32_t image_size, uint32_t block_size);
     int espFlashWrite(void *payload, uint32_t size);
     int epsFlashFinish(bool reboot);
-    int flashBinary(File& file, uint32_t size, uint32_t address);
+    //int flashBinary(File& file, uint32_t size, uint32_t address);
     int flashBinaryStream(Stream &myFile, uint32_t size, uint32_t address);
 
   public:
 	  void setUpdateProgressCallback(THandlerFunction value);
     void espFlasherInit(void);           // Initialize flasher
     bool espConnect(void);               // Establish connection
-    void espFlashBinFile(const char* bin_file_name);  // Flash binary file
+    //void espFlashBinFile(const char* bin_file_name);  // Flash binary file
     void espFlashBinStream(Stream &myFile,uint32_t size);  // Flash binary file
 
 
