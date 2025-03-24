@@ -252,14 +252,21 @@ void recvMsg(uint8_t *data, size_t len){
     digitalWrite(ENPin, HIGH);
     pinMode(ENPin, INPUT);
   }
-  if (d =="Upgrade Nextion"){
+  if (d=="Reboot WatchDog"){
+    WebSerial.printf("Rebooting WatchDog ...");
+    ESP.restart();
+  }
+  if ((d =="Upgrade Nextion")||(d =="Update Nextion")){
     mustUpgradeNextion=true;
   }
-  if (d=="Upgrade PoolMaster"){
+  if ((d=="Upgrade PoolMaster")||(d=="Update PoolMaster")){
     mustUpgradePoolMaster=true;
   }
-  if (d=="Upgrade WatchDog"){
+  if ((d=="Upgrade WatchDog")||(d=="Update WatchDog")){
     mustUpgradeWatchDog=true;
+  }
+  if (d=="Restart WatchDog"){
+    
   }
 }
 
