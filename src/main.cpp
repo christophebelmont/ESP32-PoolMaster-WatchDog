@@ -3,6 +3,11 @@
 #include <WiFi.h>
 #include <ESPAsyncWebServer.h>
 #include <ElegantOTA.h>
+<<<<<<< Updated upstream
+=======
+#include <Update.h>
+#include <TimeLib.h>
+>>>>>>> Stashed changes
 #include <TelnetStream.h>
 #include <HTTPClient.h>
 #include <ESPNexUpload.h>
@@ -46,9 +51,7 @@ const char* upgrade_url_watchdog  = "/local/poolmaster/WatchDog.bin";
 
 bool mustUpgradeNextion = false;
 bool mustUpgradePoolMaster = false;
-bool mustUpgradeWatchDog = false;
-bool mustDownloadPoolMaster = false;
-bool mustDownloadWatchDog = false;
+//bool mustUpgradeWatchDog = false;
 
 int upgradeCounter = 0;
 
@@ -91,6 +94,7 @@ int freeRam () {
 // Get current free stack 
 unsigned stack_hwm(){
   return uxTaskGetStackHighWaterMark(nullptr);
+<<<<<<< Updated upstream
 }
 
 // Monitor free stack (display smallest value)
@@ -102,7 +106,10 @@ void stack_mon(UBaseType_t &hwm)
     hwm = temp;
     Serial.printf("[stack_mon] %s: %d bytes",pcTaskGetTaskName(NULL), hwm);
   }  
+=======
+>>>>>>> Stashed changes
 }
+
 
 // ----------------------------------------------------------------------------
 // Connecting to the WiFi network
@@ -217,27 +224,17 @@ void TaskUpgradeNextion(void *pvParameters)
 // ----------------------------------------------------------------------------
 void UpgradePoolMaster(void)
 {
-   WebSerial.printf("Connection to %s",upgrade_host);
+  WebSerial.printf("Connection to %s",upgrade_host);
   
-    HTTPClient http;
-    
-    // begin http client
-      if(!http.begin(String("http://") + upgrade_host + upgrade_url_esp)){
-      WebSerial.printf("Connection failed");
-      return;
-    }
+  HTTPClient http;
   
-    WebSerial.printf("Requesting URL: %s",upgrade_url_esp);
-   
-    // This will send the (get) request to the server
-    int code          = http.GET();
-    int contentLength = http.getSize();
-    
-    // Update the nextion display
-    if(code == 200){
-      WebSerial.printf("File received. Update PoolMaster...");
-      bool result;
+  // begin http client
+    if(!http.begin(String("http://") + upgrade_host + upgrade_url_esp)){
+    WebSerial.printf("Connection failed");
+    return;
+  }
 
+<<<<<<< Updated upstream
       // Initialize ESP32Flasher
       ESP32Flasher espflasher;
       // set callback: What to do / show during upload..... Optional! Called every 2048 bytes
@@ -249,24 +246,48 @@ void UpgradePoolMaster(void)
         WebSerial.printf("[memCheck] Stack: %d bytes - Heap: %d bytes",stack_hwm(),freeRam()); 
       });
       espflasher.espFlasherInit();//sets up Serial communication to another esp32
+=======
+  WebSerial.printf("Requesting URL: %s",upgrade_url_esp);
+ 
+  // This will send the (get) request to the server
+  int code          = http.GET();
+  int contentLength = http.getSize();
+  
+  // Update the nextion display
+  if(code == 200){
+    WebSerial.printf("File received. Update PoolMaster...");
+    bool result;
+>>>>>>> Stashed changes
 
-      int connect_status = espflasher.espConnect();
+    // Initialize ESP32Flasher
+    ESP32Flasher espflasher;
+    // set callback: What to do / show during upload..... Optional! Called every 2048 bytes
+    upgradeCounter=0;
+    espflasher.setUpdateProgressCallback([](){
+      upgradeCounter++;
+      WebSerial.printf("PoolMaster Programming progress: %d%%",upgradeCounter);   
+      //display remaining RAM/Heap space.
+      WebSerial.printf("[memCheck] Stack: %d bytes - Heap: %d bytes",stack_hwm(),freeRam()); 
+    });
+    espflasher.espFlasherInit();//sets up Serial communication to another esp32
 
-      if (connect_status != SUCCESS) {
-        WebSerial.printf("Cannot connect to target");
-      }else{
-        WebSerial.printf("Connected to target");
+    int connect_status = espflasher.espConnect();
 
-        espflasher.espFlashBinStream(*http.getStreamPtr(),contentLength);
-      }
-
+    if (connect_status != SUCCESS) {
+      WebSerial.printf("Cannot connect to target");
     }else{
-      // else print http error
-      WebSerial.printf("HTTP error: %d",http.errorToString(code).c_str());
+      WebSerial.printf("Connected to target");
+
+      espflasher.espFlashBinStream(*http.getStreamPtr(),contentLength);
     }
 
-    http.end();
-    WebSerial.printf("Closing connection");
+  }else{
+    // else print http error
+    WebSerial.printf("HTTP error: %d",http.errorToString(code).c_str());
+  }
+
+  http.end();
+  WebSerial.printf("Closing connection");
 }
 
 // ----------------------------------------------------------------------------
@@ -312,10 +333,13 @@ void recvMsg(uint8_t *data, size_t len){
   if ((d=="Upgrade PoolMaster")||(d=="Update PoolMaster")){
     mustUpgradePoolMaster=true;
   }
+<<<<<<< Updated upstream
   if ((d=="Upgrade WatchDog")||(d=="Update WatchDog")){
     mustUpgradeWatchDog=true;
   }
 
+=======
+>>>>>>> Stashed changes
 }
 
 // ----------------------------------------------------------------------------
@@ -363,7 +387,10 @@ void setup() {
   Serial2.begin(115200);delay(100);
   
 
+<<<<<<< Updated upstream
   //initSPIFFS();
+=======
+>>>>>>> Stashed changes
   initWiFi();
 
   WebSerial.begin(&server);
@@ -475,9 +502,12 @@ void loop()
     vTaskSuspend(WriteToSerialHandle);
     vTaskSuspend(ReadFromSerialHandle);
     UpgradePoolMaster();
+<<<<<<< Updated upstream
     xTaskResumeAll();
     rtc_wdt_enable();
     rtc_wdt_protect_on();
+=======
+>>>>>>> Stashed changes
   }
 
   // Check for updates
