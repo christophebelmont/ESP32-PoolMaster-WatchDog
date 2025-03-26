@@ -305,11 +305,11 @@ void TaskUpgradePoolMaster(void)
 
         // Initialize ESP32Flasher
         ESP32Flasher espflasher;
-        // set callback: What to do / show during upload..... Optional! Called every 2048 bytes
+        // set callback: What to do / show during upload..... Optional! Called every transfert integer %
         upgradeCounter=0;
         espflasher.setUpdateProgressCallback([](){
           upgradeCounter++;
-          snprintf(local_sbuf,sizeof(local_sbuf),"PoolMaster Upgrade Progress %4.1f%%",((((float)upgradeCounter*1024)/contentLength)*100));
+          snprintf(local_sbuf,sizeof(local_sbuf),"PoolMaster Upgrade Progress %02d%%",upgradeCounter);
           Local_Logs_Dispatch(local_sbuf,1,"\r");
         });
         espflasher.espFlasherInit();//sets up Serial communication to another esp32
