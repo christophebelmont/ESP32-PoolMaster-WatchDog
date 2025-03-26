@@ -1,52 +1,50 @@
 /*
-  WiFiTelnetToSerial - Example Transparent UART to Telnet Server for ESP32
+  PoolMaster WatchDog - Act as a watchdog and support ESP32 to PoolMaster's main CPU
 
-  Copyright (c) 2017 Hristo Gochkov. All rights reserved.
-  This file is part of the ESP32 WiFi library for Arduino environment.
-
-  This library is free software; you can redistribute it and/or
-  modify it under the terms of the GNU Lesser General Public
-  License as published by the Free Software Foundation; either
-  version 2.1 of the License, or (at your option) any later version.
-
-  This library is distributed in the hope that it will be useful,
-  but WITHOUT ANY WARRANTY; without even the implied warranty of
-  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
-  Lesser General Public License for more details.
-
-  You should have received a copy of the GNU Lesser General Public
-  License along with this library; if not, write to the Free Software
-  Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 */
+#define TARGET_TELNET
+//#define TARGET_WEBSERIAL
+//#define TARGET_PAPERTRAIL
+
 #include <WiFi.h>
 #include <WiFiMulti.h>
-#include <WebSerial.h>
+#ifdef TARGET_WEBSERIAL
+  #include <WebSerial.h>
+#endif
 #include <ESPAsyncWebServer.h>
 #include <TimeLib.h>
 #include <ElegantOTA.h>
-#include <Elog.h>
-#include <ElogMacros.h>
+#ifdef TARGET_PAPERTRAIL
+  #include <Elog.h>
+  #include <ElogMacros.h>
+#endif
 #include <ESPNexUpload.h>
 #include <HTTPClient.h>
 #include "soc/rtc_wdt.h"
+#include "esp32_flasher.h"
 
 const long gmtOffset_sec = 3600;
 const int daylightOffset_sec = 3600;
 
-
 // PaperTrail
-#define PAPERTRAIL_HOST "logs6.papertrailapp.com"
-#define PAPERTRAIL_PORT 21858
-#define PL_LOG 0  // PoolMaster Logs
-#define WD_LOG 1  // WatchDog Logs
+#ifdef TARGET_PAPERTRAIL
+  #define PAPERTRAIL_HOST "logs6.papertrailapp.com"
+  #define PAPERTRAIL_PORT 21858
+  #define PL_LOG 0  // PoolMaster Logs
+  #define WD_LOG 1  // WatchDog Logs
+#endif
 
-//how many clients should be able to telnet to this ESP32
-#define MAX_SRV_CLIENTS 2
+#ifdef TARGET_TELNET
+  //how many clients should be able to telnet to this ESP32
+  #define MAX_SRV_CLIENTS 2
+#endif
+
 #define BUFFER_SIZE 400
 #define LOG_BUFFER_SIZE 400
 
 // Upgrade triggers
 volatile bool mustUpgradeNextion = false;
+volatile bool mustUpgradePoolMaster = false;
 
 // Upgrade binary storage (HTTP Server)
 const char* upgrade_host          = "192.168.86.250:8123";
@@ -73,31 +71,57 @@ const char *ssid = "CasaParigi";
 const char *password = "Elsa2011Andrea2017Clara2019";
 
 WiFiMulti wifiMulti;
-WiFiServer Telnetserver(23);
-WiFiClient serverClients[MAX_SRV_CLIENTS];
+#ifdef TARGET_TELNET
+  WiFiServer Telnetserver(23);
+  WiFiClient serverClients[MAX_SRV_CLIENTS];
+#endif
 AsyncWebServer Webserver(80);
-//AsyncWebSocket websock("/ws");
 
+// Local logline buffers
 char sbuf[BUFFER_SIZE];
 char local_sbuf[LOG_BUFFER_SIZE];
 
 // OTA
 unsigned long ota_progress_millis = 0;
 
+/*! Send Logs to the various facilities
+ *
+ * \param _log_message The message to be sent.
+ * \param _targets The targets where message should be printed (1-Telnet 2-WebSerial 3-PaperTrail or any combination)
+ * \param _telnet_separator The newline character to be used when printing with Telnet
+ *
+ * \return None
+ */
+void Local_Logs_Dispatch(const char *_log_message, uint8_t _targets = 7, const char* _telnet_separator = "\r\n")
+{
 
+#ifdef TARGET_TELNET
+  if(_targets & 1) {  // First bit is for telnet
+    // Telnet
+    for (int i = 0; i < MAX_SRV_CLIENTS; i++) {
+      if (serverClients[i] && serverClients[i].connected()) {
+        serverClients[i].write(_log_message, strlen(_log_message));
+        delay(1);
+        serverClients[i].write(_telnet_separator, strlen(_telnet_separator));
+        delay(1);
+      }
+    }
+  }
+#endif
 
-//////////////////// HELPER FUNCTIONS ///////////////////
-/////////////////////////////////////////////////////////
-//Compute free RAM
-//useful to check if it does not shrink over time
-int freeRam () {
-  int v = xPortGetFreeHeapSize();
-  return v;
-}
+#ifdef TARGET_WEBSERIAL
+  if(_targets & 2) {  // Second bit is for WebSerial
+    // WebSerial
+    WebSerial.printf("%s",_log_message);
+  }
+#endif
 
-// Get current free stack 
-unsigned stack_hwm(){
-  return uxTaskGetStackHighWaterMark(nullptr);
+#ifdef TARGET_PAPERTRAIL
+  if(_targets & 4) {  // Third bit is for WebSerial
+    // Cloud PaperTrail
+    logger.log(WD_LOG, 1, "%s", _log_message);
+  }
+#endif
 }
 
 // Monitor free stack (display smallest value)
@@ -107,7 +131,7 @@ void stack_mon(UBaseType_t &hwm)
   if(!hwm || temp < hwm)
   {
     hwm = temp;
-    Serial.printf("[stack_mon] %s: %d bytes",pcTaskGetTaskName(NULL), hwm);
+    Serial.printf("[stack_mon] %s: %d bytes\n",pcTaskGetTaskName(NULL), hwm);
   }  
 }
 
@@ -158,61 +182,42 @@ template <size_t n> bool readUntil(Stream& stream, char (&buf)[n], char const* d
   return readUntil_r(stream, buf, delim, i, j);
 }
 
-void Local_Logs_Dispatch(const char *_log_message, uint8_t _targets)
-{
-
-  // Telnet
-  for (int i = 0; i < MAX_SRV_CLIENTS; i++) {
-    if (serverClients[i] && serverClients[i].connected()) {
-      serverClients[i].write(_log_message, strlen(_log_message));
-      delay(1);
-    }
-  }
-
-  // WebSerial
-  WebSerial.printf("%s",_log_message);
-
-  // Cloud PaperTrail
-  logger.log(WD_LOG, 1, "%s", _log_message);
-}
 
 
 //////////////////////// UPGRADE NEXTION //////////////////////////
 ////////////////////////////////////////////////////////////
-// ----------------------------------------------------------------------------
-// NEXTION UPGRADE FUNCTION initialization
-// ----------------------------------------------------------------------------
 void TaskUpgradeNextion(void *pvParameters)
 {
+  static UBaseType_t hwm=0;     // free stack size
+  rtc_wdt_protect_off();
+  rtc_wdt_disable();
   for (;;) {
     if(mustUpgradeNextion)
     {
       mustUpgradeNextion = false;
-      rtc_wdt_protect_off();
-      rtc_wdt_disable();
       Local_Logs_Dispatch("Nextion Upgrade Requested");
-      WebSerial.printf("Stopping PoolMaster...");
+      Local_Logs_Dispatch("Stopping PoolMaster...");
       pinMode(ENPin, OUTPUT);
       digitalWrite(ENPin, LOW);
-      WebSerial.printf("Upgrading Nextion ...");
+      Local_Logs_Dispatch("Upgrading Nextion ...");
    
       HTTPClient http;
       
       // begin http client
         if(!http.begin(String("http://") + upgrade_host + upgrade_url_nextion)){
-        WebSerial.printf("Connection failed");
+          Local_Logs_Dispatch("Connection failed");
         return;
       }
-    
-      WebSerial.printf("Requesting URL: %s",upgrade_url_nextion);
+      snprintf(local_sbuf,sizeof(local_sbuf),"Requesting URL: %s",upgrade_url_nextion);
+      Local_Logs_Dispatch(local_sbuf);
     
       // This will send the (get) request to the server
       int code          = http.GET();
-      contentLength = http.getSize();
+      contentLength     = http.getSize();
         
       // Update the nextion display
       if(code == 200){
-        WebSerial.printf("File received. Update Nextion...");
+        Local_Logs_Dispatch("File received. Update Nextion...");
         bool result;
 
         // initialize ESPNexUpload
@@ -221,25 +226,27 @@ void TaskUpgradeNextion(void *pvParameters)
         upgradeCounter=0;
         nextion.setUpdateProgressCallback([](){
           upgradeCounter++;
-          snprintf(local_sbuf,sizeof(local_sbuf),"Nextion Upgrade Progress %f4.1\r\n",(float)((upgradeCounter*2048/contentLength)*100));
-          Local_Logs_Dispatch(local_sbuf;3);
+          snprintf(local_sbuf,sizeof(local_sbuf),"Nextion Upgrade Progress %4.1f%%",((((float)upgradeCounter*2048)/contentLength)*100));
+          Local_Logs_Dispatch(local_sbuf,1,"\r");
         });
         // prepare upload: setup serial connection, send update command and send the expected update size
         result = nextion.prepareUpload(contentLength);
         
         if(!result){
-            WebSerial.printf("Error: %s",nextion.statusMessage.c_str());
+            snprintf(local_sbuf,sizeof(local_sbuf),"Error: %s",nextion.statusMessage.c_str());
+            Local_Logs_Dispatch(local_sbuf);
             //Serial.println("Error: " + nextion.statusMessage);
         }else{
-            WebSerial.printf("Start upload. File size is: %d bytes",contentLength);
-            
+            snprintf(local_sbuf,sizeof(local_sbuf),"Start upload. File size is: %d bytes",contentLength);
+            Local_Logs_Dispatch(local_sbuf);
             // Upload the received byte Stream to the nextion
             result = nextion.upload(*http.getStreamPtr());
             
             if(result){
-              WebSerial.printf("Successfully updated Nextion");
+              Local_Logs_Dispatch("Successfully updated Nextion");
             }else{
-              WebSerial.printf("Error updating Nextion: %s",nextion.statusMessage.c_str());
+              snprintf(local_sbuf,sizeof(local_sbuf),"Error updating Nextion: %s",nextion.statusMessage.c_str());
+              Local_Logs_Dispatch(local_sbuf);
             }
 
             // end: wait(delay) for the nextion to finish the update process, send nextion reset command and end the serial connection to the nextion
@@ -250,18 +257,84 @@ void TaskUpgradeNextion(void *pvParameters)
         
       }else{
         // else print http error
-        WebSerial.printf("HTTP error: %d",http.errorToString(code).c_str());
+        snprintf(local_sbuf,sizeof(local_sbuf),"HTTP error: %d",http.errorToString(code).c_str());
+        Local_Logs_Dispatch(local_sbuf);
       }
 
       http.end();
-      WebSerial.printf("Closing connection");
-      WebSerial.printf("Starting PoolMaster ...");
+      Local_Logs_Dispatch("Closing connection");
+      Local_Logs_Dispatch("Starting PoolMaster ...");
       digitalWrite(ENPin, HIGH);
       pinMode(ENPin, INPUT);
       //rtc_wdt_enable();
       //rtc_wdt_protect_on();
     }
+    stack_mon(hwm);
   }
+}
+
+//////////////////////// UPGRADE NEXTION //////////////////////////
+////////////////////////////////////////////////////////////
+//void TaskUpgradePoolMaster(void *pvParameters)
+void TaskUpgradePoolMaster(void)
+{
+  //static UBaseType_t hwm=0;     // free stack size
+  //rtc_wdt_protect_off();
+  //rtc_wdt_disable();
+  //for (;;) {
+    if(mustUpgradePoolMaster) {
+      mustUpgradePoolMaster = false;
+      HTTPClient http;
+      
+      // begin http client
+        if(!http.begin(String("http://") + upgrade_host + upgrade_url_esp)){
+          Local_Logs_Dispatch("Connection failed");
+        return;
+      }
+      snprintf(local_sbuf,sizeof(local_sbuf),"Requesting URL: %s",upgrade_url_esp);
+      Local_Logs_Dispatch(local_sbuf);
+    
+      // This will send the (get) request to the server
+      int code          = http.GET();
+      contentLength     = http.getSize();
+        
+      // Update the nextion display
+      if(code == 200){
+        Local_Logs_Dispatch("File received. Update PoolMaster...");
+        bool result;
+
+        // Initialize ESP32Flasher
+        ESP32Flasher espflasher;
+        // set callback: What to do / show during upload..... Optional! Called every 2048 bytes
+        upgradeCounter=0;
+        espflasher.setUpdateProgressCallback([](){
+          upgradeCounter++;
+          snprintf(local_sbuf,sizeof(local_sbuf),"PoolMaster Upgrade Progress %4.1f%%",((((float)upgradeCounter*1024)/contentLength)*100));
+          Local_Logs_Dispatch(local_sbuf,1,"\r");
+        });
+        espflasher.espFlasherInit();//sets up Serial communication to another esp32
+
+        int connect_status = espflasher.espConnect();
+
+        if (connect_status != SUCCESS) {
+          Local_Logs_Dispatch("Cannot connect to target");
+        }else{
+          Local_Logs_Dispatch("Connected to target");
+
+          espflasher.espFlashBinStream(*http.getStreamPtr(),contentLength);
+        }
+
+      }else{
+        // else print http error
+        snprintf(local_sbuf,sizeof(local_sbuf),"HTTP error: %d",http.errorToString(code).c_str());
+        Local_Logs_Dispatch(local_sbuf);
+      }
+
+      http.end();
+      Local_Logs_Dispatch("Closing connection");
+    }
+    //stack_mon(hwm);
+  //}
 }
 
 
@@ -277,7 +350,7 @@ void onOTAProgress(size_t current, size_t final) {
   // Log every 1 second
   if (millis() - ota_progress_millis > 1000) {
     ota_progress_millis = millis();
-    snprintf(local_sbuf,sizeof(local_sbuf),"OTA Progress Current: %u bytes, Final: %u bytes\n\r", current, final);
+    snprintf(local_sbuf,sizeof(local_sbuf),"OTA Progress Current: %u bytes, Final: %u bytes", current, final);
     Local_Logs_Dispatch(local_sbuf);
   }
 }
@@ -326,10 +399,10 @@ void cmdExecute(char _command) {
     break;
 
     case 'S':  // PoolMaster Upgrade
-
+      mustUpgradePoolMaster = true;
+      TaskUpgradePoolMaster();
     break;
     case 'T':  // Nextion Upgrade
-      WebSerial.print("Request Upgrade Nextion");
       mustUpgradeNextion = true;
     break;
   }
@@ -340,6 +413,7 @@ void cmdExecute(char _command) {
 // ----------------------------------------------------------------------------
 // Message Callback WebSocket
 // ----------------------------------------------------------------------------
+#ifdef TARGET_WEBSERIAL
 void recvMsg(uint8_t *data, size_t len) {
   //WebSerial.println("Received Data...");
   String d = "";
@@ -349,7 +423,7 @@ void recvMsg(uint8_t *data, size_t len) {
   //cmdExecute(data[0]);
   //WebSerial.println(d);
 }
-
+#endif
 //////////////////////// SETUP //////////////////////////
 /////////////////////////////////////////////////////////
 void setup() {
@@ -391,43 +465,63 @@ void setup() {
 
   initElegantOTA();
 
+  #ifdef TARGET_WEBSERIAL
   // Start WebSerial
   WebSerial.begin(&Webserver);
   WebSerial.onMessage(&recvMsg); /* Attach Message Callback */
   Webserver.onNotFound([](AsyncWebServerRequest* request) { request->redirect("/webserial"); });
+  #endif
 
   Webserver.begin();
-  
+
   //Connect to serial receiving messages from PoolMaster
   Serial2.begin(115200);
   Serial2.setTimeout(100);
-  
+  Serial2.setRxBufferSize(1024);
+
   //Start Telnet Server
+  #ifdef TARGET_TELNET
   Telnetserver.begin();
   Telnetserver.setNoDelay(true);
+  #endif
 
-  Serial.print("Ready! Use 'telnet ");
-  Serial.print(WiFi.localIP());
-  Serial.println(" 23' to connect");
+  Local_Logs_Dispatch("Ready! Use 'telnet ");
+  Local_Logs_Dispatch(" 23' to connect");
 
   // Start PaperTrail Logging
+  #ifdef TARGET_PAPERTRAIL
   logger.configureSyslog(PAPERTRAIL_HOST, PAPERTRAIL_PORT, ""); // Syslog server IP, port and device name
   //logger.registerSerial(COUNTER, DEBUG, "COUNT", Serial); // Log both to serial...
   logger.registerSyslog(PL_LOG, DEBUG, FAC_LOCAL0, "poolmaster"); // ...and syslog. Set the facility to user
   logger.registerSyslog(WD_LOG, DEBUG, FAC_LOCAL0, "watchdog"); // ...and syslog. Set the facility to user
   logger.log(WD_LOG, INFO, "PoolMaster Logs Started");
   logger.log(WD_LOG, INFO, "WatchDog Logs Started");
+  #endif
 
-  xTaskCreate(
-    TaskUpgradeNextion, "Task Upgrade Nextion",
-    7000 // The stack size can be checked by calling `uxHighWaterMark = uxTaskGetStackHighWaterMark(NULL);`
-    ,
-    NULL  // No parameter is used
-    ,
-    1  // Priority
-    ,
-    nullptr  // Task handle is not used here
+  Local_Logs_Dispatch("Creating Tasks");
+  // Create loop tasks in the scheduler.
+  //------------------------------------
+  int app_cpu = xPortGetCoreID();
+
+  xTaskCreatePinnedToCore(
+    TaskUpgradeNextion, 
+    "Nextion Upgrade",
+    4500, // The stack size can be checked by calling `uxHighWaterMark = uxTaskGetStackHighWaterMark(NULL);
+    NULL,  // No parameter is used
+    1,  // Priority
+    nullptr,  // Task handle is not used here
+    app_cpu
   );
+
+  /*xTaskCreatePinnedToCore(
+    TaskUpgradePoolMaster, 
+    "PoolMaster Upgrade",
+    2048, // The stack size can be checked by calling `uxHighWaterMark = uxTaskGetStackHighWaterMark(NULL);`
+    NULL,  // No parameter is used
+    1,  // Priority
+    nullptr,  // Task handle is not used here
+    app_cpu
+  );*/
 }
 
 //////////////////////// MAIN LOOP //////////////////////////
@@ -435,6 +529,7 @@ void setup() {
 void loop() {
   uint8_t i;
   if (wifiMulti.run() == WL_CONNECTED) {
+    #ifdef TARGET_TELNET
     //check if there are any new clients
     if (Telnetserver.hasClient()) {
       for (i = 0; i < MAX_SRV_CLIENTS; i++) {
@@ -445,12 +540,10 @@ void loop() {
           }
           serverClients[i] = Telnetserver.accept();
           if (!serverClients[i]) {
-            Serial.println("available broken");
+            Local_Logs_Dispatch("available broken");
           }
-          Serial.print("New client: ");
-          Serial.print(i);
-          Serial.print(' ');
-          Serial.println(serverClients[i].remoteIP());
+          snprintf(local_sbuf,sizeof(local_sbuf),"New Client %d (%s)",i,serverClients[i].remoteIP());
+          Local_Logs_Dispatch(local_sbuf);
           break;
         }
       }
@@ -475,10 +568,12 @@ void loop() {
         }
       }
     }
+    #endif
     //check UART for data
     if (Serial2.available()) {
       if (readUntil(Serial2, sbuf, "\n")) {
-        // `buf` contains the delimiter, it can now be used for parsing.      
+        // `buf` contains the delimiter, it can now be used for parsing.     
+        #ifdef TARGET_TELNET 
         //push UART data to all connected telnet clients
         for (i = 0; i < MAX_SRV_CLIENTS; i++) {
           if (serverClients[i] && serverClients[i].connected()) {
@@ -486,14 +581,18 @@ void loop() {
             delay(1);
           }
         }
+        #endif
 
         // Cleanup buffer and send to the web
         for (int src = 0, dst = 0; src < sizeof(sbuf); src++)
         if (sbuf[src] != '\r') sbuf[dst++] = sbuf[src];
 
+        #ifdef TARGET_WEBSERIAL
         // WebSerial
         WebSerial.printf("%s",sbuf);
+        #endif
 
+        #ifdef TARGET_PAPERTRAIL
         // Cloud Logger PaperTrail
         int logLevel = 0;
         bool must_send_to_server = false;
@@ -529,20 +628,25 @@ void loop() {
           logLevel = 7;
 
         logger.log(PL_LOG, logLevel, "%s", sbuf);
+        #endif
       }
     }
   } else {
-    Serial.println("WiFi not connected!");
+    Local_Logs_Dispatch("WiFi not connected!");
+    #ifdef TARGET_TELNET
     for (i = 0; i < MAX_SRV_CLIENTS; i++) {
       if (serverClients[i]) {
         serverClients[i].stop();
       }
     }
+    #endif
     delay(1000);
   }
 
   // Check for updates
   ElegantOTA.loop();
+  #ifdef TARGET_WEBSERIAL
   // Update WebSerial
   WebSerial.loop();
+  #endif
 }
