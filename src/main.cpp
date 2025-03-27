@@ -542,7 +542,8 @@ void loop() {
           if (!serverClients[i]) {
             Local_Logs_Dispatch("available broken");
           }
-          snprintf(local_sbuf,sizeof(local_sbuf),"New Client %d (%s)",i,serverClients[i].remoteIP());
+          IPAddress ip_temp=serverClients[i].remoteIP();
+          snprintf(local_sbuf,sizeof(local_sbuf),"New Client %d (%d.%d.%d.%d)",i,ip_temp[0],ip_temp[1],ip_temp[2],ip_temp[3]);
           Local_Logs_Dispatch(local_sbuf);
           break;
         }
