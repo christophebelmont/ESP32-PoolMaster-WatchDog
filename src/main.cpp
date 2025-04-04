@@ -67,8 +67,8 @@ int contentLength = 0;
 const int ENPin = 25;
 const int BOOTPin = 26;
 
-const char *ssid = "CasaParigi";
-const char *password = "Elsa2011Andrea2017Clara2019";
+const char *ssid = "SSID";
+const char *password = "PASSWORD";
 
 WiFiMulti wifiMulti;
 #ifdef TARGET_TELNET
@@ -404,6 +404,16 @@ void cmdExecute(char _command) {
     break;
     case 'T':  // Nextion Upgrade
       mustUpgradeNextion = true;
+    break;
+    case 'H':  // Help
+      Local_Logs_Dispatch("***********************");  
+      Local_Logs_Dispatch("Help Message:");
+      Local_Logs_Dispatch("R: Reboot WatchDog");
+      Local_Logs_Dispatch("P: Stop PoolMaster");
+      Local_Logs_Dispatch("Q: Start PoolMaster");
+      Local_Logs_Dispatch("S: Upgrade PoolMaster");
+      Local_Logs_Dispatch("T: Upgrade Nextion");
+      Local_Logs_Dispatch("***********************");  
     break;
   }
 }
